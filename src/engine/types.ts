@@ -19,6 +19,10 @@ export interface Line {
   sound?: SoundId;
   choices?: Choice[];
   aside?: boolean;
+  voice?: "jerry" | "mike" | "linda";
+  cue?: "repair" | "harmony" | "shutdown" | "leave" | "sacrifice" | "operator-enter" | "operator-work" | "operator-leave";
+  recollection?: { key: string; versions: Record<string, string> };
+  duration?: number;
 }
 
 export interface StagePoint {
@@ -56,6 +60,11 @@ export interface Scene {
   roundTitle?: string;
   faultIndicator?: boolean;
   ending?: SceneEnding;
+  room?: string;
+  atmosphere?: "old" | "modern" | "harmony" | "silent";
+  character?: "technician" | "absent";
+  tableau?: boolean;
+  retirement?: boolean;
 }
 
 export interface StorySnapshot {

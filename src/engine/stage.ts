@@ -1,7 +1,8 @@
 import { StageAudio } from "./audio";
 import { Dialogue } from "./dialogue";
 import { StoryState } from "./state";
-import type { Hotspot, Scene, StagePoint } from "./types";
+import { machineForHotspot } from "./machines";
+import type { Hotspot, Line, Scene, StagePoint } from "./types";
 
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -43,6 +44,7 @@ export class Stage {
       this.required(".dialogue"),
       this.audio,
       this.state,
+      (cue) => this.cue(cue),
     );
     this.wireControls();
   }
@@ -61,6 +63,19 @@ export class Stage {
     this.required(".scene-subtitle").textContent = scene.subtitle;
     this.required(".round__title").textContent = scene.roundTitle ?? "MAINTENANCE ROUND";
     this.stage.classList.toggle("stage--fault", Boolean(scene.faultIndicator));
+    this.stage.classList.toggle("stage--modern", scene.atmosphere === "modern");
+    this.stage.classList.toggle("stage--retirement", Boolean(scene.retirement) || scene.atmosphere === "harmony");
+    this.stage.classList.remove("stage--shutdown");
+    this.stage.classList.toggle("stage--departed", scene.atmosphere === "harmony");
+    this.stage.classList.toggle("stage--sacrificed", scene.atmosphere === "harmony");
+    if (scene.atmosphere !== "harmony") this.stage.classList.remove("stage--harmony");
+    this.stage.setAttribute("aria-label", `${scene.title} machine room`);
+    this.required(".new-operator").classList.remove("new-operator--visible", "new-operator--working");
+    this.required<HTMLImageElement>(".room").src = scene.room ?? "/assets/station4/room.png";
+    this.character.hidden = scene.character === "absent";
+    this.required(".round").hidden = Boolean(scene.tableau);
+    this.stage.classList.toggle("stage--tableau", Boolean(scene.tableau));
+    this.audio.setAtmosphere(scene.atmosphere ?? "old", Boolean(scene.faultIndicator));
     this.required(".ending").classList.remove("ending--visible");
     this.renderHotspots(scene.hotspots);
     this.renderChecklist();
@@ -68,7 +83,10 @@ export class Stage {
 
   private wireControls(): void {
     this.begin.addEventListener("click", async () => {
-      if (!this.scene) return;
+      if (!this.scene || this.busy) return;
+      this.busy = true;
+      this.begin.disabled = true;
+      this.setHotspotsDisabled(true);
       this.audio.startAmbience();
       this.audio.play("clack", 0.25);
       this.curtain.classList.add("curtain--open");
@@ -76,6 +94,8 @@ export class Stage {
       await this.dialogue.play(this.scene.intro);
       this.setDeskWorking(true);
       this.setHint("Move the pointer through the room. Listen for what answers.");
+      this.busy = false;
+      this.setHotspotsDisabled(false);
     });
     this.required<HTMLButtonElement>(".sound-toggle").addEventListener(
       "click",
@@ -102,10 +122,16 @@ export class Stage {
     await wait(500);
     this.sceneIndex += 1;
     this.loadScene(next);
+    this.character.style.left = "14%";
     this.setDeskWorking(true);
     this.setHint("The next shift begins.");
     await wait(450);
     await this.dialogue.play(next.intro);
+    if (next.tableau) {
+      this.showEnding();
+      this.nextScene.disabled = false;
+      return;
+    }
     this.setHint("Move the pointer through the room. Listen for what answers.");
     this.busy = false;
     this.nextScene.disabled = false;
@@ -155,6 +181,7 @@ export class Stage {
     this.light(hotspot);
     this.setHotspotsDisabled(true);
     this.setHint(hotspot.label);
+    this.audio.focus(machineForHotspot(hotspot.id));
     await this.walk(hotspot.walkTo);
     if (hotspot.focusEffect) {
       this.character.classList.add("character--machine-working");
@@ -164,12 +191,16 @@ export class Stage {
       this.setDeskWorking(true);
     }
     this.closeup.src = hotspot.closeup;
+    await this.closeup.decode().catch(() => undefined);
+    if (this.closeup.naturalHeight) this.focusFrame.style.setProperty("--art-ratio", String(this.closeup.naturalWidth / this.closeup.naturalHeight));
     this.closeup.alt = `${hotspot.label}, inspected at close range`;
     this.focusFrame.dataset.effect = hotspot.focusEffect ?? "object";
     this.focusLayer.classList.toggle("focus-layer--machine", Boolean(hotspot.focusEffect));
+    this.focusLayer.classList.toggle("focus-layer--panel", hotspot.closeup.includes("timing-panel"));
     this.focusLayer.classList.add("focus-layer--visible");
     await this.dialogue.play(hotspot.lines);
     this.focusLayer.classList.remove("focus-layer--visible");
+    this.audio.focus();
     if (hotspot.clearsFault) this.stage.classList.remove("stage--fault");
     this.character.classList.remove("character--machine-working");
     this.setDeskWorking(false);
@@ -177,30 +208,55 @@ export class Stage {
     button.classList.add("hotspot--complete");
     button.querySelector("span")?.setAttribute("data-complete", "✓");
     this.renderChecklist();
-    await this.walk({ x: 14, y: 2 });
+    await this.walk({ x: 14, y: 6.4 });
     this.setDeskWorking(true);
     this.dark();
-    this.busy = false;
-    this.setHotspotsDisabled(false);
-
     if (this.scene && this.state.completedCount === this.scene.hotspots.length) {
       await wait(300);
       this.busy = true;
       this.light({ ...hotspot, x: 4, y: 28, width: 23, height: 45 });
       await this.dialogue.play(this.scene.outro);
       this.setHint(`${this.scene.roundTitle ?? "Maintenance round"} complete.`);
-      const ending = this.scene.ending ?? {
-        title: "SHIFT COMPLETE",
-        text: "The room settles into its imperfect rhythm.",
-      };
-      this.required(".ending strong").textContent = ending.title;
-      this.required(".ending span").textContent = ending.text;
-      const hasNext = this.sceneIndex < this.scenes.length - 1;
-      this.nextScene.textContent = ending.nextLabel ?? "Begin next shift";
-      this.nextScene.hidden = !hasNext;
-      this.required(".ending").classList.add("ending--visible");
+      this.showEnding();
     } else {
+      this.busy = false;
+      this.setHotspotsDisabled(false);
       this.setHint("He returns to the desk. The room keeps talking.");
+    }
+  }
+
+  private showEnding(): void {
+    const ending = this.scene?.ending;
+    this.required(".ending strong").textContent = ending?.title ?? "SHIFT COMPLETE";
+    this.required(".ending span").textContent = ending?.text ?? "";
+    const hasNext = this.sceneIndex < this.scenes.length - 1;
+    this.nextScene.textContent = ending?.nextLabel ?? "Begin next shift";
+    this.nextScene.hidden = !hasNext;
+    this.required(".ending").classList.toggle("ending--quiet", Boolean(this.scene?.tableau) || this.scene?.id === "retirement");
+    this.required(".ending").classList.add("ending--visible");
+    this.dark();
+    this.setHint("");
+  }
+
+  private cue(cue: NonNullable<Line["cue"]>): void {
+    if (cue === "repair") { this.stage.classList.remove("stage--fault"); this.audio.repair(); }
+    if (cue === "sacrifice") { this.stage.classList.add("stage--sacrificed"); this.audio.sacrifice(); }
+    if (cue === "leave") {
+      this.stage.classList.add("stage--departed");
+      this.setDeskWorking(false);
+      this.character.classList.add("character--left");
+      this.character.style.setProperty("--walk-duration", "3000ms");
+      this.character.style.left = "-18%";
+      window.setTimeout(() => { this.character.hidden = true; this.character.classList.remove("character--left"); }, 3000);
+    }
+    if (cue === "operator-enter") this.required(".new-operator").classList.add("new-operator--visible");
+    if (cue === "operator-work") this.required(".new-operator").classList.add("new-operator--working");
+    if (cue === "operator-leave") this.required(".new-operator").classList.remove("new-operator--visible");
+    if (cue === "harmony") this.stage.classList.add("stage--harmony", "stage--sacrificed");
+    if (cue === "shutdown") {
+      this.stage.classList.add("stage--shutdown");
+      this.stage.classList.remove("stage--harmony");
+      this.audio.setAtmosphere("silent");
     }
   }
 
@@ -236,7 +292,11 @@ export class Stage {
 
   private setDeskWorking(working: boolean): void {
     this.character.classList.toggle("character--working", working);
-    if (working) this.character.style.bottom = "6.4%";
+    if (working) {
+      this.character.style.bottom = "6.4%";
+      this.character.dataset.x = "14";
+      this.character.dataset.y = "6.4";
+    }
   }
 
   private light(hotspot: Pick<Hotspot, "x" | "y" | "width" | "height">): void {
@@ -292,10 +352,15 @@ export class Stage {
         <section class="stage" aria-label="Station 4 maintenance room">
           <img class="room" src="/assets/station4/room.png" alt="" />
           <span class="room-fault" aria-hidden="true"></span>
+          <span class="room-green" aria-hidden="true"></span>
+          <div class="retirement-props" aria-hidden="true"><i class="party-cake"></i><i class="party-cups"></i></div>
+          <div class="desk-night" aria-hidden="true"></div>
+          <div class="cabinet-silence" aria-hidden="true"></div>
+          <div class="new-operator" aria-hidden="true"></div>
           <div
             class="character character--working"
             data-x="14"
-            data-y="2"
+            data-y="6.4"
             style="--depth-scale: .987; bottom: 6.4%"
             aria-label="The technician"
           ><div class="character__sprite"></div></div>
@@ -315,6 +380,7 @@ export class Stage {
                 <span class="lamp lamp--5"></span>
                 <span class="lamp lamp--6"></span>
                 <span class="fault-light"></span>
+                <span class="green-light"></span>
               </div>
             </div>
           </div>

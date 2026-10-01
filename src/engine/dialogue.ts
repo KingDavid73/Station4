@@ -1,28 +1,35 @@
 import type { Choice, Line } from "./types";
 import type { StageAudio } from "./audio";
 import type { StoryState } from "./state";
+import { lineText } from "./recollection";
 
 export class Dialogue {
   constructor(
     private readonly root: HTMLElement,
     private readonly audio: StageAudio,
     private readonly state: StoryState,
+    private readonly onCue: (cue: NonNullable<Line["cue"]>) => void = () => undefined,
   ) {}
 
   async play(lines: Line[]): Promise<void> {
     this.root.classList.add("dialogue--visible");
-    for (const line of lines) {
-      const choice = await this.show(line);
-      if (choice?.response) {
-        for (const response of choice.response) await this.show(response);
-      }
-    }
+    await this.sequence(lines);
     this.root.classList.remove("dialogue--visible");
     this.root.replaceChildren();
   }
 
+  private async sequence(lines: Line[]): Promise<void> {
+    for (const line of lines) {
+      const choice = await this.show(line);
+      if (choice?.response) await this.sequence(choice.response);
+    }
+  }
+
   private show(line: Line): Promise<Choice | undefined> {
+    this.root.classList.toggle("dialogue--silent", !line.text && Boolean(line.duration));
     if (line.sound) this.audio.play(line.sound);
+    if (line.cue) this.onCue(line.cue);
+    if (line.voice) this.audio.voice(line.voice);
     this.root.replaceChildren();
     if (line.speaker) {
       const speaker = document.createElement("div");
@@ -32,8 +39,11 @@ export class Dialogue {
     }
     const text = document.createElement("p");
     text.className = line.aside ? "dialogue__text dialogue__text--aside" : "dialogue__text";
-    text.textContent = line.text;
+    text.textContent = lineText(line, this.state.snapshot.memories);
+    if (line.voice) text.classList.add("dialogue__text--phonetic");
     this.root.append(text);
+
+    if (line.duration) return new Promise(resolve => window.setTimeout(() => resolve(undefined), line.duration));
 
     return new Promise((resolve) => {
       const actions = document.createElement("div");
@@ -49,7 +59,7 @@ export class Dialogue {
         next.addEventListener("click", () => {
           this.audio.play("click", 0.22);
           resolve(undefined);
-        });
+        }, { once: true });
         actions.append(next);
       }
       this.root.append(actions);
@@ -70,7 +80,7 @@ export class Dialogue {
         this.state.remember(choice.memory.key, choice.memory.value);
       }
       resolve(choice);
-    });
+    }, { once: true });
     return button;
   }
 }
